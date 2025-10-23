@@ -1,0 +1,33 @@
+services:
+  db:
+    image: mysql:8.0
+    cap_add:
+      - SYS_NICE
+    restart: always
+    env_file:
+      - ./.env
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+
+  fastapi_service:
+    build: ./fastapi_service
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    environment:
+      - DATABASE_URL=mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@db/${MYSQL_DATABASE}
+    depends_on:
+      - db
+
+  telegram_bot:
+    build: ./telegram_bot
+    env_file:
+      - ./.env
+    depends_on:
+      - fastapi_service
+
+volumes:
+  db_data:
