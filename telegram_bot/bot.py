@@ -11,7 +11,7 @@ API_URL = "http://fastapi_service:8000/products/"
 # Диалог добавления
 ADD_NAME, ADD_DESCRIPTION, ADD_PRICE = range(3)
 # Диалог обновления
-UPDATE_SELECT, UPDATE_NAME, UPDATE_DESCRIPTION, UPDATE_PRICE = range(3, 7)
+UPDATE_NAME, UPDATE_DESCRIPTION, UPDATE_PRICE = range(3, 6)
 
 # --- Вспомогательные функции ---
 
@@ -67,7 +67,7 @@ async def get_single_product(update: Update, context: ContextTypes.DEFAULT_TYPE)
             message = (
                 f"📦 Детали товара ID {product['id']}:\n"
                 f"🏷️ Название: {product['name']}\n"
-                f"📝 Описание: {product['description']}\n"
+                f"📝 Описание: {product.get('description', 'Нет описания')}\n"
                 f"💰 Цена: {product['price']}"
             )
             await update.message.reply_text(message)
@@ -81,12 +81,15 @@ async def delete_product(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         product_id = int(context.args[0])
         response = requests.delete(f"{API_URL}{product_id}")
+        if response.status_code == 404:
+             await update.message.reply_text(f"Товар с ID {product_id} не найден.")
+             return
         response.raise_for_status()
-        await update.message.reply_text(f"Товар с ID {product_id} успешно удален.")
+        await update.message.reply_text(f"🗑️ Товар с ID {product_id} успешно удален.")
     except (IndexError, ValueError):
         await update.message.reply_text("Пожалуйста, укажите ID товара. Пример: /delete 1")
     except requests.exceptions.RequestException:
-        await update.message.reply_text(f"Не удалось удалить товар с ID {product_id}. Возможно, он уже удален.")
+        await update.message.reply_text(f"Не удалось удалить товар с ID {product_id}.")
 
 # --- Диалог ДОБАВЛЕНИЯ товара ---
 
@@ -115,8 +118,8 @@ async def add_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         response = requests.post(API_URL, json=product_data)
         response.raise_for_status()
         await update.message.reply_text('✅ Товар успешно добавлен!')
-    except (ValueError, KeyError):
-        await update.message.reply_text('Что-то пошло не так. Попробуйте добавить товар заново. /add')
+    except ValueError:
+        await update.message.reply_text('Цена должна быть числом. Попробуйте добавить товар заново. /add')
     except requests.exceptions.RequestException as e:
         await update.message.reply_text(f'Ошибка API: {e}')
     finally:
@@ -136,7 +139,7 @@ async def update_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         
         context.user_data['product'] = product
         await update.message.reply_text(
-            f"Обновляем товар: {product['name']}.\n"
+            f"Обновляем товар: '{product['name']}'.\n\n"
             "Введите новое название или отправьте /skip, чтобы оставить старое."
         )
         return UPDATE_NAME
@@ -145,56 +148,61 @@ async def update_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
 async def update_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обновляет название или пропускает."""
-    if update.message.text != '/skip':
-        context.user_data['product']['name'] = update.message.text
-    await update.message.reply_text("Введите новое описание или /skip, чтобы оставить старое.")
+    """Сохраняет новое название и переходит к описанию."""
+    context.user_data['product']['name'] = update.message.text
+    await update.message.reply_text("Название обновлено. Введите новое описание или /skip.")
+    return UPDATE_DESCRIPTION
+
+async def skip_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пропускает обновление названия и переходит к описанию."""
+    await update.message.reply_text("Название оставлено без изменений. Введите новое описание или /skip.")
     return UPDATE_DESCRIPTION
 
 async def update_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обновляет описание или пропускает."""
-    if update.message.text != '/skip':
-        context.user_data['product']['description'] = update.message.text
-    await update.message.reply_text("Введите новую цену или /skip, чтобы оставить старую.")
+    """Сохраняет новое описание и переходит к цене."""
+    context.user_data['product']['description'] = update.message.text
+    await update.message.reply_text("Описание обновлено. Введите новую цену или /skip.")
+    return UPDATE_PRICE
+
+async def skip_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пропускает обновление описания и переходит к цене."""
+    await update.message.reply_text("Описание оставлено без изменений. Введите новую цену или /skip.")
     return UPDATE_PRICE
 
 async def update_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обновляет цену и отправляет запрос в API."""
-    product = context.user_data['product']
+    """Сохраняет новую цену и отправляет запрос в API."""
     try:
-        if update.message.text != '/skip':
-            product['price'] = float(update.message.text.replace(',', '.'))
+        context.user_data['product']['price'] = float(update.message.text.replace(',', '.'))
+        await update.message.reply_text("Цена обновлена. Сохраняю товар...")
+        return await save_update(update, context)
+    except ValueError:
+        await update.message.reply_text('Цена должна быть числом. Попробуйте еще раз или /skip.')
+        return UPDATE_PRICE # Остаемся в том же состоянии
 
-        # Убираем ID из данных, которые отправляем в API
+async def skip_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пропускает обновление цены и отправляет запрос в API."""
+    await update.message.reply_text("Цена оставлена без изменений. Сохраняю товар...")
+    return await save_update(update, context)
+
+async def save_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отправляет обновленные данные в API."""
+    product = context.user_data.get('product')
+    if not product:
+        await update.message.reply_text("Что-то пошло не так. Данные для обновления потеряны.")
+        return ConversationHandler.END
+    
+    try:
         product_id = product.pop('id')
         
         response = requests.put(f"{API_URL}{product_id}", json=product)
         response.raise_for_status()
         await update.message.reply_text('✅ Товар успешно обновлен!')
 
-    except ValueError:
-        await update.message.reply_text('Цена должна быть числом. Попробуйте еще раз.')
-        return UPDATE_PRICE # Остаемся в том же состоянии
     except requests.exceptions.RequestException as e:
         await update.message.reply_text(f'Ошибка API: {e}')
     finally:
         context.user_data.clear()
     return ConversationHandler.END
-
-async def skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик для команды /skip."""
-    # Эта функция нужна, чтобы /skip не воспринимался как обычный текст
-    # Логика пропуска реализована в самих функциях диалога
-    # Мы просто перенаправляем на следующий шаг
-    current_state = context.user_data.get('current_state')
-    if current_state == UPDATE_NAME:
-        return await update_name(update, context)
-    if current_state == UPDATE_DESCRIPTION:
-        return await update_description(update, context)
-    if current_state == UPDATE_PRICE:
-        return await update_price(update, context)
-    return ConversationHandler.END
-
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отменяет любой диалог."""
@@ -223,23 +231,21 @@ def main() -> None:
     update_conv = ConversationHandler(
         entry_points=[CommandHandler("update", update_start)],
         states={
-            UPDATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_name)],
-            UPDATE_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_description)],
-            UPDATE_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_price)],
+            UPDATE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, update_name),
+                CommandHandler("skip", skip_name)
+            ],
+            UPDATE_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, update_description),
+                CommandHandler("skip", skip_description)
+            ],
+            UPDATE_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, update_price),
+                CommandHandler("skip", skip_price)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        # Добавляем обработку /skip на каждом шаге
-        map_to_parent={
-            UPDATE_NAME: UPDATE_NAME,
-            UPDATE_DESCRIPTION: UPDATE_DESCRIPTION,
-            UPDATE_PRICE: UPDATE_PRICE,
-        }
     )
-    # Добавляем обработчик для /skip внутри диалога обновления
-    update_conv.states[UPDATE_NAME].append(CommandHandler('skip', update_name))
-    update_conv.states[UPDATE_DESCRIPTION].append(CommandHandler('skip', update_description))
-    update_conv.states[UPDATE_PRICE].append(CommandHandler('skip', update_price))
-
 
     # Добавляем все обработчики в приложение
     application.add_handler(CommandHandler("start", start))
